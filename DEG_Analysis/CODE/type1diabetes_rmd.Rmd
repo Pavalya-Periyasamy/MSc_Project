@@ -1,0 +1,591 @@
+---
+title: "DEG on Type 1 Diabetes Associated Bacteria"
+author: "Pavalya"
+date: "2025-05-07"
+output: html_document
+---
+
+```{r}
+#load libraries
+library(DESeq2)
+library(ggplot2)
+library(GEOquery)
+```
+# Step 1: Preparing count data
+```{r}
+#read in counts data
+counts <- read.delim("type1diabetes_rawcounts.txt", header=TRUE, row.names=1, sep="\t")
+head(counts)
+# Load the count file (if not already loaded)
+counts <- read.delim("type1diabetes_rawcounts.txt", header = TRUE, row.names = 1, sep = "\t", check.names = FALSE)
+
+# Remove ".1", ".2", etc. from column names
+cleaned_colnames <- sub("\\.\\d+$", "", colnames(counts))
+
+# View unique sample names
+unique(cleaned_colnames)
+
+#Collapse technical replicates by summing columns
+# Replace colnames with cleaned (replicate-free) names
+colnames(counts) <- cleaned_colnames
+# Collapse duplicate columns by summing them
+collapsed_counts <- as.data.frame(t(rowsum(t(counts), group = colnames(counts))))
+#check result
+dim(collapsed_counts)
+head(colnames(collapsed_counts))
+
+
+
+```
+
+```{r}
+#read in sample info
+# Obtain metadata
+library(tidyverse)
+sample_info <- read_csv("SraRunTable.csv", show_col_types = FALSE)
+View(sample_info)
+```
+
+```{r}
+# Manipulate metadata
+
+library(dplyr)
+
+ metadata_sub <- sample_info %>%
+  dplyr::select(
+    agent,
+    'GEO_Accession (exp)',
+    source_name,
+    time_point)
+    
+ 
+View(metadata_sub)
+# Step 3.1: Rename GEO accession column for ease of use
+
+
+metadata_sub <- metadata_sub %>%
+  rename_with(~ "accession", .cols = matches("GEO_Accession"))
+
+
+
+#Step 4: Match metadata to the collapsed count matrix
+# Keep only metadata entries that match the count column names
+metadata_filtered <- metadata_sub %>%
+  filter(accession %in% colnames(collapsed_counts))
+
+# Reorder rows of metadata to match column order in count matrix
+metadata_filtered <- metadata_filtered[match(colnames(collapsed_counts), metadata_filtered$accession), ]
+
+# Check alignment
+all(metadata_filtered$accession == colnames(collapsed_counts))  # should return TRUE
+
+# making sure the row names in metadata matches to the columns names in counts data 
+all(metadata_filtered$accession %in% colnames(collapsed_counts))  # should return TRUE
+
+
+
+```
+```{r}
+library(DESeq2)
+```
+
+#Step 5: Create DESeq2 dataset
+```{r}
+# Create DESeq2 object
+dds <- DESeqDataSetFromMatrix(countData = collapsed_counts,
+                              colData = metadata_filtered,
+                              design = ~ agent)  # or ~ agent + time_point if you want both
+
+# Clean up agent levels: remove parentheses, replace spaces with underscores
+dds$agent <- gsub("\\s+", "_", dds$agent)      # Replace spaces with underscores
+dds$agent <- gsub("[()]", "", dds$agent)       # Remove parentheses
+dds$agent <- factor(dds$agent)                 # Re-factor the cleaned labels
+
+# Check result
+levels(dds$agent)
+
+dds
+
+```
+
+# prefiltering: removing rows with low gene counts
+#keeping rows that has 10 reads total 
+```{r}
+keep <- rowSums(counts(dds)) >=10 # True or false(logical values)
+
+# use the logical values to subset deseq dataset object
+dds <- dds[keep,]
+
+dds
+
+```
+# set the factor level
+```{r}
+#To manually set the reference level:
+dds$agent <- relevel(dds$agent, ref = "Serum-Free_Control")
+dds$agent
+
+```
+
+# run DESeq
+```{r}
+dds <- DESeq(dds)
+```
+#To Normalize raw counts for visualization:
+```{r}
+vsdata <- vst(dds, blind=FALSE)
+```
+# Lets again look at the qc of our data 
+#First lets do PCA plot
+```{r}
+plotPCA(vsdata,intgroup="agent" )
+plotPCA(vsdata,intgroup="time_point" )
+
+
+#improve
+# Load required libraries
+library(DESeq2)
+library(ggplot2)
+
+# # STEP 1: Variance Stabilizing Transformation (already done)
+# vsdata <- vst(dds, blind = FALSE)
+# 
+# # STEP 2: Select top 1000 most variable genes (optional but improves clarity)
+# top_var_genes <- head(order(rowVars(assay(vsdata)), decreasing = TRUE), 1000)
+# vsdata_top <- vsdata[top_var_genes, ]
+# 
+# # STEP 3: Get PCA data with sample metadata
+# pcaData <- plotPCA(vsdata_top, intgroup = "agent", returnData = TRUE)
+# percentVar <- round(100 * attr(pcaData, "percentVar"))
+# 
+# # STEP 4: Custom PCA plot using ggplot2
+# ggplot(pcaData, aes(x = PC1, y = PC2, color = agent)) +
+#   geom_point(size = 3) +
+#   xlab(paste0("PC1: ", percentVar[1], "% variance")) +
+#   ylab(paste0("PC2: ", percentVar[2], "% variance")) +
+#   ggtitle("PCA of Top 1000 Most Variable Genes") +
+#   theme_bw() +
+#   theme(
+#     legend.position = "right",
+#     plot.title = element_text(hjust = 0.5),
+#     text = element_text(size = 12)
+#   )
+# 
+# 
+# 
+# 
+# pcaData <- plotPCA(vsdata_top, intgroup = c("agent", "time_point"), returnData = TRUE)
+# 
+# ggplot(pcaData, aes(x = PC1, y = PC2, color = agent)) +
+#   geom_point(size = 3) +
+#   facet_wrap(~ time_point) +
+#   theme_bw()
+# 
+# 
+# 
+
+
+# ggplot(pcaData, aes(x = PC1, y = PC2, color = agent)) +
+#   geom_point(size = 3, alpha = 0.9) +
+#   facet_wrap(~ time_point) +
+#   xlab(paste0("PC1: ", percentVar[1], "% variance")) +
+#   ylab(paste0("PC2: ", percentVar[2], "% variance")) +
+#   ggtitle("PCA by Treatment Agent and Time Point") +
+#   theme_bw() +
+#   theme(
+#     plot.title = element_text(hjust = 0.5, size = 14, face = "bold"),
+#     strip.text = element_text(size = 12),
+#     axis.text = element_text(size = 10),
+#     axis.title = element_text(size = 12),
+#     legend.title = element_text(size = 12),
+#     legend.text = element_text(size = 10)
+#   )
+
+
+#Make sure vsdata is defined:
+vsdata <- vst(dds, blind = FALSE)
+# Save output to PNG
+png("PCAplot_agents_time.png", width = 1200, height = 1000, res = 200)
+# Example with shape for agent and color for time_point
+pcaData <- plotPCA(vsdata, intgroup = c("agent", "time_point"), returnData = TRUE)
+percentVar <- round(100 * attr(pcaData, "percentVar"))
+
+ggplot(pcaData, aes(PC1, PC2, color = time_point, shape = agent)) +
+  geom_point(size = 3) +
+  xlab(paste0("PC1: ", percentVar[1], "% variance")) +
+  ylab(paste0("PC2: ", percentVar[2], "% variance")) +
+  ggtitle("PCA: Combined View by Time and Agent") +
+  theme_bw()
+dev.off()
+
+
+
+```
+#Volcano Plot: IL-1B vs Serum-Free_Control
+```{r}
+# # Run DESeq2 if not already done
+# dds <- DESeq(dds)
+# 
+# # Set reference level
+# dds$agent <- relevel(dds$agent, ref = "Serum-Free_Control")
+#Make sure vsdata is defined:
+vsdata <- vst(dds, blind = FALSE)
+# Save output to PNG
+png("volcanoplot_IL-1B_Serum-Free_Control.png", width = 1200, height = 1000, res = 300)
+
+# Extract results: IL-1B vs Serum-Free_Control
+res_IL1B <- results(dds, contrast = c("agent", "IL-1B", "Serum-Free_Control"))
+
+# Remove NA and order by adjusted p-value
+res_IL1B <- na.omit(res_IL1B)
+res_IL1B$gene <- rownames(res_IL1B)
+res_IL1B <- as.data.frame(res_IL1B)  # 🔧 Convert to plain data frame
+
+
+# Volcano plot
+library(ggplot2)
+library(dplyr)
+
+res_IL1B <- res_IL1B %>%
+  mutate(
+    sig = ifelse(padj < 0.05 & abs(log2FoldChange) > 1,
+                 ifelse(log2FoldChange > 1, "Up", "Down"),
+                 "NS")
+  )
+
+
+ggplot(res_IL1B, aes(x = log2FoldChange, y = -log10(padj), color = sig)) +
+  geom_point(alpha = 0.7) +
+  scale_color_manual(values = c("Up" = "red", "Down" = "blue", "NS" = "grey")) +
+  labs(title = "Volcano Plot: IL-1B vs Control",
+       x = "log2 Fold Change",
+       y = "-log10 Adjusted P-value") +
+  theme_minimal()
+dev.off()
+
+```
+#Volcano Plot: Bacteroides_dorei_BD vs Serum-Free_Control
+```{r}
+#Make sure vsdata is defined:
+vsdata <- vst(dds, blind = FALSE)
+# Save output to PNG
+png("volcanoplot_Bacteroides_dorei_BD_Serum-Free_Control.png", width = 1200, height = 1000, res = 300)
+# Extract results: Bacteroides dorei vs Control
+res_BD <- results(dds, contrast = c("agent", "Bacteroides_dorei_BD", "Serum-Free_Control"))
+
+# Remove NA values
+res_BD <- na.omit(res_BD)
+
+# Add gene IDs
+res_BD$gene <- rownames(res_BD)
+
+# Mark significance based on adjusted p-value and log2 fold change
+res_BD_df <- as.data.frame(res_BD) %>%
+  dplyr::mutate(sig = ifelse(padj < 0.05 & abs(log2FoldChange) > 1,
+                             ifelse(log2FoldChange > 1, "Up", "Down"),
+                             "NS"))
+
+# Volcano plot
+library(ggplot2)
+ggplot(res_BD_df, aes(x = log2FoldChange, y = -log10(padj), color = sig)) +
+  geom_point(size = 1) +
+  scale_color_manual(values = c("Up" = "red", "Down" = "blue", "NS" = "grey")) +
+  labs(title = "Volcano Plot: Bacteroides dorei vs Control",
+       x = "log2 Fold Change", y = "-log10 Adjusted P-value") +
+  theme_minimal()
+dev.off()
+
+```
+#Biological Insight:
+This supports the hypothesis that Bacteroides dorei, a bacterium enriched in pre-diabetic gut microbiomes, triggers strong pro-inflammatory or immune-related responses in islets.
+
+These DEGs could include cytokines, chemokines, or other signaling molecules relevant to autoimmunity.
+
+#Heatmap of Top DEGs for All Bacterial Agents vs Control
+```{r}
+#Make sure vsdata is defined:
+vsdata <- vst(dds, blind = FALSE)
+
+# Load required libraries
+library(DESeq2)
+library(pheatmap)
+library(dplyr)
+
+# Save output to PNG
+png("Heatmap_Top_DEGs_Across_Agents.png", width = 1200, height = 1000, res = 150)
+vsdata <- vst(dds, blind = FALSE)
+
+
+
+# Define bacterial agents and control
+bacterial_agents <- c("Bacteroides_dorei_BD", "Escherichia_coli_EC", "Ruminococcus_gnavus_RG")
+reference <- "Serum-Free_Control"
+top_genes_all <- c()
+
+# Extract top genes from each comparison
+for (agent in bacterial_agents) {
+  res <- results(dds, contrast = c("agent", agent, reference))
+  res <- na.omit(res)
+
+  sig_res <- res %>%
+    as.data.frame() %>%
+    filter(padj < 0.05 & abs(log2FoldChange) > 1) %>%
+    arrange(padj)
+
+  top_genes <- rownames(sig_res)[1:min(30, nrow(sig_res))]
+  top_genes_all <- unique(c(top_genes_all, top_genes))
+}
+
+# Subset VST-normalized expression for top genes
+vsdata_sub <- assay(vsdata)[top_genes_all, ]
+
+# Create annotation dataframe
+annotation_col <- as.data.frame(colData(vsdata)[, c("agent", "time_point")])
+
+# Plot the heatmap
+pheatmap(vsdata_sub,
+         annotation_col = annotation_col,
+         scale = "row",
+         fontsize_row = 6,
+         fontsize_col = 8,
+         main = "Top DEGs across Bacterial Agents vs Control",
+         clustering_distance_rows = "euclidean",
+         clustering_distance_cols = "euclidean",
+         show_rownames = FALSE)
+
+dev.off()
+```
+
+
+# explore results
+#save the results
+```{r}
+res <- results(dds)
+# view the results
+res
+```
+# logfold2 change calculated in desired factor agent with refernce as serum free control
+# All the values here is with respect to Ruminococcus gnavus
+#The statistical test used here is wald test 
+# base mean: Average of the normalized counts taken over of all the samples
+#log2 fold change is the change of the respective gene in the Ruminococcus gnavus comapred to Serum.Free Control.
+#The positive values are upregulated genes in the Ruminococcus gnavus condition and negative values are downregulated genes in the Ruminococcus gnavus condition.
+#ifcSE: Provides the standard error estimates of the log2fold change
+# The stat here are the wald test values for these genes.
+#p value is for the test statistic for this gene.
+#padj value are corrected pvalue for multiple testing.
+#Note: We need to correct the pvalue for multiple testing is because whenever we perform a statsistical test we use a p-value of 0.05, 5% of our DEG's are not really differentially expressed but they are only due to random chance and there is no real effect.
+#In our dataset we have around 32839 genes, 5% of 32839 is  1,642 genes, these in our list of DEG's genes these  1,642 genes are false positives.
+#To avoid detection of false positives ,these adjp values help
+```{r}
+#Summary for the result
+summary(res)
+
+```
+
+```{r}
+#change the padj values
+res0.01 <- results(dds, alpha =0.01)
+summary(res0.01)
+```
+
+#contrasts (more than 2 levels in a factor)
+```{r}
+results(dds, contrast=c("agent", "Bacteroides_dorei_BD", "Serum-Free_Control"))
+```
+
+# MA plot
+
+```{r}
+plotMA(res)
+```
+# MA plot is scatter plot of logfold change versus mean of normalized counts, shows us the genes that are differentially expressed.
+# Blue colored ones are significantly differentially expressed, they have padj value of less than 0.05.
+# Smaller traingles towards the edge of the plot , these genes have higher fold changes.
+#Direction of the triangle tells us the direction of the fold change.
+#genes on the upper and lower right quadrant means these genes have high mean of normalized counts and high log fold changes, make this as interesting candidates  to further loo into.
+
+#Functional annoatation
+```{r}
+# Install if not already installed
+# BiocManager::install("clusterProfiler")
+# BiocManager::install("org.Hs.eg.db")
+
+library(clusterProfiler)
+library(org.Hs.eg.db)
+library(dplyr)
+library(enrichplot)
+
+# Step 1: Extract significant gene IDs from IL-1B vs Control results
+sig_genes <- res_IL1B %>%
+  as.data.frame() %>%
+  filter(padj < 0.05 & abs(log2FoldChange) > 1) %>%
+  pull(gene)  # assumes gene column has Ensembl IDs
+
+# Step 2: Convert Ensembl to Entrez IDs
+gene_ids <- bitr(sig_genes,
+                 fromType = "ENSEMBL",
+                 toType = "ENTREZID",
+                 OrgDb = org.Hs.eg.db)
+
+# Check how many mapped successfully
+cat("Mapped genes:", nrow(gene_ids), "out of", length(sig_genes), "\n")
+
+# Step 3: Keep only successfully mapped Entrez IDs
+mapped_genes <- unique(gene_ids$ENTREZID)
+
+# Step 4: GO enrichment analysis (Biological Process)
+ego <- enrichGO(gene         = mapped_genes,
+                OrgDb        = org.Hs.eg.db,
+                keyType      = "ENTREZID",
+                ont          = "BP",
+                pAdjustMethod = "BH",
+                pvalueCutoff  = 0.05,
+                readable      = TRUE)
+
+# Step 5: KEGG pathway enrichment
+ekegg <- enrichKEGG(gene         = mapped_genes,
+                    organism     = 'hsa',
+                    pvalueCutoff = 0.05)
+
+# Step 6: Plot GO enrichment
+barplot(ego, showCategory = 10, title = "GO: Biological Process")
+
+# Step 7: Plot KEGG enrichment
+barplot(ekegg, showCategory = 10, title = "KEGG Pathway Enrichment")
+
+
+```
+# Multi-Agent Enrichment Analysis
+```{r}
+# Load required packages
+library(clusterProfiler)
+library(org.Hs.eg.db)
+library(dplyr)
+library(DESeq2)
+library(enrichplot)
+
+# Step 1: Define your agents and reference
+agents <- c("Bacteroides_dorei_BD", "Escherichia_coli_EC", "Ruminococcus_gnavus_RG")
+reference <- "Serum-Free_Control"
+
+# Step 2: Collect significant DEGs from all agents
+all_sig_genes <- c()
+
+for (agent in agents) {
+  res <- results(dds, contrast = c("agent", agent, reference))
+  res <- na.omit(res)
+  
+  sig_res <- res %>%
+    as.data.frame() %>%
+    filter(padj < 0.05 & abs(log2FoldChange) > 1)
+  
+  sig_res$gene <- rownames(sig_res)
+  all_sig_genes <- c(all_sig_genes, sig_res$gene)
+}
+
+# Remove duplicates
+all_sig_genes <- unique(all_sig_genes)
+
+# Step 3: Convert Ensembl IDs to Entrez IDs
+gene_ids <- bitr(all_sig_genes, 
+                 fromType = "ENSEMBL", 
+                 toType = "ENTREZID", 
+                 OrgDb = org.Hs.eg.db)
+
+mapped_genes <- unique(gene_ids$ENTREZID)
+
+# Step 4: GO enrichment
+ego_all <- enrichGO(
+  gene         = mapped_genes,
+  OrgDb        = org.Hs.eg.db,
+  keyType      = "ENTREZID",
+  ont          = "BP",
+  pvalueCutoff = 0.05,
+  readable     = TRUE
+)
+
+# Step 5: KEGG enrichment
+ekegg_all <- enrichKEGG(
+  gene         = mapped_genes,
+  organism     = 'hsa',
+  pvalueCutoff = 0.05
+)
+
+# Step 6: Plot
+barplot(ego_all, showCategory = 10, title = "GO Enrichment: All Bacterial Agents")
+barplot(ekegg_all, showCategory = 10, title = "KEGG Enrichment: All Bacterial Agents")
+
+```
+#All
+
+```{r}
+# Load required packages
+library(DESeq2)
+library(clusterProfiler)
+library(org.Hs.eg.db)
+library(enrichplot)
+library(ggplot2)
+library(dplyr)
+
+# List of all agents compared to control
+all_agents <- c("IL-1B", "Bacteroides_dorei_BD", "Escherichia_coli_EC", "Ruminococcus_gnavus_RG")
+reference <- "Serum-Free_Control"
+
+# Create output folders (optional)
+dir.create("enrichment_plots", showWarnings = FALSE)
+
+for (agent in all_agents) {
+  
+  # Step 1: Run DESeq2 results for each agent vs control
+  res <- results(dds, contrast = c("agent", agent, reference))
+  res <- na.omit(res)
+  res$gene <- rownames(res)
+
+  # Step 2: Filter significant genes
+  sig_genes <- res %>%
+    as.data.frame() %>%
+    filter(padj < 0.05 & abs(log2FoldChange) > 1) %>%
+    pull(gene)
+
+  # Step 3: Convert ENSEMBL to Entrez
+  gene_ids <- bitr(sig_genes, fromType = "ENSEMBL", 
+                   toType = "ENTREZID", 
+                   OrgDb = org.Hs.eg.db)
+  mapped_genes <- gene_ids$ENTREZID
+
+  # Step 4: GO enrichment (Biological Process)
+  ego <- enrichGO(
+    gene         = mapped_genes,
+    OrgDb        = org.Hs.eg.db,
+    keyType      = "ENTREZID",
+    ont          = "BP",
+    pAdjustMethod = "BH",
+    pvalueCutoff  = 0.05,
+    readable      = TRUE
+  )
+
+  # Step 5: KEGG enrichment
+  ekegg <- enrichKEGG(
+    gene         = mapped_genes,
+    organism     = 'hsa',
+    pvalueCutoff = 0.05
+  )
+  print(paste0("Saving plot to: ", getwd(), "/enrichment_plots/GO_", agent, ".png"))
+
+
+  # Step 6: Save GO plot
+  png(filename = paste0("enrichment_plots/GO_", agent, ".png"), width = 1000, height = 800)
+  barplot(ego, showCategory = 10, title = "GO Enrichment")
+  dev.off()
+
+  # Step 7: Save KEGG plot
+  png(filename = paste0("enrichment_plots/KEGG_", agent, ".png"), width = 1000, height = 800)
+  barplot(ekegg, showCategory = 10, title = "KEGG Enrichment")
+  dev.off()
+
+  cat("✅ Completed:", agent, "\n\n")
+}
+
+```
+
